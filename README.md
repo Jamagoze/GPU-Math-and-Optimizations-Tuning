@@ -160,7 +160,7 @@ The resulting native library must be packaged into the appropriate Magisk module
 | Author | Jamagoze |
 | Language | C++ |
 | Integration | Zygisk |
-| License | Not yet specified |
+| License | MIT |
 
 ## Disclaimer
 
