@@ -1,171 +1,87 @@
 # GPU Math
 
-**GPU Math** is a lightweight Zygisk module designed to optimize GPU shader precision and OpenCL floating-point operations on Android.
+A Zygisk module that lowers GPU load in OpenGL ES apps, system-wide (games, browser WebGL, launcher, SystemUI). It hooks the GLES texture and shader calls and changes their parameters before they reach the driver. Vulkan is not touched.
 
-It uses native function hooks to modify selected OpenGL ES fragment shaders and OpenCL compiler options at runtime.
-
-No GPU driver replacement or GPU frequency modification is required.
+Tuned for a Snapdragon 680 / Adreno 610 tablet (Redmi Pad SE, HyperOS), but it is not device-specific.
 
 ## Features
 
-### FP16 Shader Math (OpenGL ES)
+| Key | Default | What it does |
+|---|---|---|
+| `af_off` | `1` | Forces anisotropic filtering off (max anisotropy = 1). Saves texture bandwidth. |
+| `fp16` | `1` | Rewrites fragment shader default precision `highp` to `mediump` (half-precision math). Uniforms are pinned to `highp` so they still match the vertex shader. Vertex shaders and shaders with uniform blocks or structs are left alone. |
+| `mip_bilinear` | `1` | Trilinear mip filtering becomes bilinear. Halves mip samples; faint seams where mip levels switch. |
+| `tex_min_lod` | `0` | `1` to `4` raises the minimum mip level (`1` = half-res textures, `2` = quarter). Biggest bandwidth saving, softer textures. Only textures with mipmaps, ES 3.x contexts only. `0` = off. |
+| `tex_nearest` | `0` | Linear filtering becomes nearest. Pixelated and affects UI and text. Usually leave off. |
+| `exclude` | empty | Packages to skip entirely. |
 
-- Intercepts `glShaderSource()`.
-- Changes eligible fragment shader default precision from `highp` to `mediump`.
-- Preserves high precision for floating-point uniforms.
-- Skips shaders containing `gl_Position` or compute-shader indicators.
-- Leaves shaders with unsupported uniform structures untouched.
+Texture options apply to both textures and sampler objects.
 
-The goal is to reduce floating-point arithmetic costs where the GPU driver can benefit from medium precision.
+## Requirements
 
-**Note:** GLSL `mediump` does not guarantee native FP16 execution. Actual precision and performance depend on the GPU and its driver.
+- Magisk v24+ with Zygisk enabled
+- Android 8.0+ (arm64-v8a and armeabi-v7a apps are both supported)
 
-### OpenCL Fast Math
+## Build and install
 
-Intercepts `clBuildProgram()` and appends:
+1. Put `gpu_math_src.zip` and the workflow `gpu_math.yml` in your GitHub repo (`.github/workflows/`).
+2. Run the workflow. It downloads `zygisk.hpp`, builds both ABIs with the NDK and uploads `gpu_math.zip` as an artifact.
+3. Flash `gpu_math.zip` in Magisk and reboot.
 
-```text
--cl-fast-relaxed-math
--cl-mad-enable
+## Config
+
+File: `/data/adb/modules/gpu_math/config.txt`
+
 ```
-
-These compiler options allow additional floating-point optimizations.
-
-If the compiler rejects the added options with `CL_INVALID_BUILD_OPTIONS`, GPU Math retries using the original options.
-
-### Zygisk Integration
-
-- Native C++ implementation.
-- Runtime function interception.
-- GOT-based function hooking.
-- Detects newly loaded native libraries.
-- Reapplies hooks after `System.loadLibrary()`.
-- Supports application exclusions.
-
-## Configuration
-
-Edit `config.txt` inside the module directory.
-
-```ini
-# 1 = on, 0 = off
-
+af_off=1
 fp16=1
-opencl=1
-
-# Apps to skip (package names)
-exclude=
+mip_bilinear=1
+tex_min_lod=0
+tex_nearest=0
+exclude=com.playdead.limbo.full com.android.chrome
 ```
 
-### Configuration Options
+- `1` = on, `0` = off. For `tex_min_lod`, `0` is off and `1` to `4` is the level.
+- `exclude` takes package names separated by spaces or commas. The match is exact on the part of the process name before `:`, so sub-processes are excluded too. An excluded app gets none of the options.
+- Edits apply the next time an app starts: force-stop the app and reopen it. No reboot needed.
+- Flashing a new module version overwrites `config.txt`, so keep a copy of your `exclude=` line.
 
-| Option | Default | Description |
-|---|---:|---|
-| `fp16` | 1 | Enable GLES fragment shader precision modification |
-| `opencl` | 1 | Enable OpenCL fast-math compiler options |
-| `exclude` | Empty | Exclude selected application packages |
+## How it works
 
-### Examples
+No polling and no background threads.
 
-**FP16 only**
+1. On app start (after specialization) the module patches the export tables of `libGLESv2.so` and `libEGL.so`, so every library that loads later, or is still lazily bound, resolves the GL functions to the module's hooks. The original addresses are saved first.
+2. Libraries that were already bound get a one-time GOT patch.
+3. `eglGetProcAddress` is hooked as well, so engines that fetch GL entry points through EGL, or look them up with `dlsym`, get the hooks too.
 
-```ini
-fp16=1
-opencl=0
-exclude=
-```
+Hooked calls: `glTexParameter{f,fv,i,iv}`, `glSamplerParameter{f,fv,i,iv}`, `glShaderSource`, `eglGetProcAddress`.
 
-**OpenCL only**
-
-```ini
-fp16=0
-opencl=1
-exclude=
-```
-
-**Exclude applications**
-
-```ini
-fp16=1
-opencl=1
-exclude=com.example.game com.example.app
-```
-
-Package names can be separated by spaces or commas.
-
-## Compatibility
-
-GPU Math requires:
-
-- Android with Magisk and Zygisk support.
-- An ARM-compatible Android environment.
-- Applications using OpenGL ES or OpenCL.
-- Compatible GPU drivers.
-
-Performance improvements are hardware- and application-dependent.
-
-## Performance Considerations
-
-Potential benefits include:
-
-- Reduced shader arithmetic precision requirements.
-- Additional OpenCL compiler optimizations.
-- Potentially improved GPU computation efficiency.
-
-However, results are not guaranteed.
-
-Possible limitations:
-
-- Visual inaccuracies from reduced shader precision.
-- Shader compilation incompatibilities.
-- Changes in OpenCL numerical results.
-- No improvement in CPU-bound or unrelated workloads.
+Works with the ANGLE system module (`angle_sys`), because the hooks sit above ANGLE.
 
 ## Safety
 
-GPU Math does not intentionally:
+- Skipped processes: `system_server`, zygotes, isolated processes and anything named `bootanim`. The boot animation is a native binary that Zygisk never injects.
+- Bootloop guard: if a boot does not finish, the module disables itself on the next boot (it creates `disable` in its module folder). Re-enable it from Magisk after fixing the cause.
 
-- Overclock the GPU.
-- Modify GPU voltage.
-- Disable thermal protection.
-- Replace GPU drivers.
-- Force applications to use Vulkan.
+## Limits
 
-The module includes a basic bootloop guard that disables the module if the previous boot does not reach the expected completion state.
+- **Vulkan is not covered.** Apps and engines that render through Vulkan are unaffected. In Chrome, page drawing runs on Vulkan (Skia Graphite on Dawn), but WebGL goes through GLES and is hooked.
+- Processes that do not have `libGLESv2.so` loaded at startup are skipped. The zygote preloads it, so this is rare.
+- Libraries using packed relocations (APS2/RELR) that were bound before the patch are not patched, but later binds still go through the export-table patch.
+- OpenCL fast-math is not included.
+- `fp16` can cause banding or wrong lighting in some games and WebGL sites. Add those packages to `exclude=`, or turn `fp16` off.
+- `tex_min_lod` and `tex_nearest` make textures visibly softer or blockier. Test on one game first.
 
-## Building
+## Troubleshooting
 
-The native component is written in C++17 and uses the Zygisk API.
-
-Build configuration:
-
-```cmake
-set(CMAKE_CXX_STANDARD 17)
-add_library(gpumath SHARED gpumath.cpp)
-```
-
-Required build dependencies include:
-
-- Android NDK
-- CMake
-- Zygisk API headers
-
-The resulting native library must be packaged into the appropriate Magisk module directory for the target architecture.
-
-## Project Information
-
-| Property | Value |
-|---|---|
-| Project | GPU Math |
-| Version | 1.0 |
-| Author | Jamagoze |
-| Language | C++ |
-| Integration | Zygisk |
-| License | MIT |
-
-## Disclaimer
-
-GPU Math is an experimental optimization project.
-
-Performance gains depend on GPU architecture, driver implementation, application behavior, and shader characteristics.
-
-Use at your own discretion. Always test compatibility and stability before using it as a daily system module.
+- Check that the module is loaded and not auto-disabled:
+  ```
+  su -c 'ls /data/adb/modules/gpu_math; ls /data/adb/modules/gpu_math/disable /data/adb/gpu_math_boot'
+  ```
+  After a normal boot the second path should say "No such file".
+- Check for crashes after starting an app:
+  ```
+  su -c 'logcat -b crash -d | tail -50'
+  ```
+- If one app misbehaves, add its package to `exclude=` and relaunch it.
+- To compare, set `af_off=0`, `fp16=0`, `mip_bilinear=0` and relaunch the app.
