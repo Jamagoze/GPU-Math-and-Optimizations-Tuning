@@ -40,7 +40,7 @@ mip_bilinear=1
 tex_min_lod=0
 opencl=1
 tex_nearest=0
-exclude=com.playdead.limbo.full com.android.chrome
+exclude=com.first.app com.second.app
 ```
 
 - `1` = on, `0` = off. For `tex_min_lod`, `0` is off and `1` to `4` is the level.
