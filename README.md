@@ -2,8 +2,6 @@
 
 A Zygisk module that lowers GPU load in OpenGL ES apps, system-wide (games, browser WebGL, launcher, SystemUI). It hooks the GLES texture and shader calls and changes their parameters before they reach the driver. Vulkan is not touched.
 
-Tuned for a Snapdragon 680 / Adreno 610 tablet (Redmi Pad SE, HyperOS), but it is not device-specific.
-
 ## Features
 
 | Key | Default | What it does |
